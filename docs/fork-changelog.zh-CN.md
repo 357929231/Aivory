@@ -1,7 +1,7 @@
 # 本 Fork 新增功能清单
 
 > **基线**：`hjxwz123/Aivory` 的 `f945624`（`chore: prepare v2.4.9 beta.6 prerelease`）
-> **本 Fork 相对基线新增两批功能**，共 2 个提交、149 个文件。
+> **本 Fork 相对基线新增预览编辑与目录上传等功能**。
 > 本文档面向"这份代码比原版多了什么、怎么用、边界在哪"，实现细节见各功能自己的设计文档。
 
 ---
@@ -12,7 +12,7 @@
 | --- | --- | --- | --- |
 | 1 | 右侧预览面板统一 + 可拖动分隔条 + 文档编辑器 | `35b5cd1` | `src/components/chat/artifact-panel.tsx`、`src/lib/artifact-panel-width.ts`、`src/components/files/editors/*` |
 | 2 | 上传整个目录，让 AI 在目录里执行任务 | `35b5cd1` | `src/lib/folder-upload.ts`、`src/lib/folder-attachments.ts`、`server/internal/api/upload_policy.go`、`server/internal/tools/builtins.go` |
-| 3 | AI PPT（文多多 Docmee）+ 积分计费 | `7ea4722` | `server/internal/api/docmee_handlers.go`、`src/pages/ppt/AiPPT.tsx`、`src/lib/aippt-billing.ts` |
+| 3 | 对话生成文件预览 | `c445c5f` | `src/components/chat/message-row.tsx`、`src/lib/artifact-preview-kind.ts` |
 
 ---
 
@@ -83,24 +83,9 @@
 
 ---
 
-## 四、功能 3：AI PPT（文多多 Docmee）+ 积分计费
+## 四、功能 3：对话生成文件预览
 
-### 4.1 新增能力
-
-| 能力 | 说明 |
-| --- | --- |
-| **AI PPT 入口（新）** | 侧边栏新增入口 + `/ppt` 路由（已纳入 chat shell，导航缓存与实时流行为与其他分区一致） |
-| **内嵌创作台（新）** | 内嵌 Docmee 演示文稿创作台 iframe |
-| **密钥不出服务端（新）** | 服务端代理 token 接口，**浏览器始终拿不到 Docmee API Key**：`/me/ppt/config`、`/me/ppt/token`、`/me/ppt/attempt`、`/me/ppt/charge`、`/me/ppt/release` |
-| **积分计费（新）** | **先预扣、后结算**：`attempt` 先占用积分，余额不足即失败关闭；`charge` 保证一份 PPT 只计费一次；`release` 归还未出成果的预扣；`charge`/`release` 拒绝操作他人的 attempt |
-| **配置门控（新）** | 未配置时接口返回明确的「未配置」错误，而不是暴露半可用界面；`config` 只回传价格、**不含任何密钥**；上游失败不泄露 provider 细节 |
-| **管理端设置（新）** | API Key、API base URL、domain、SDK URL、creator 版本、token 有效期、每份扣费、启用开关；复用既有 setting 存储往返并对 URL 归一化；API Key 以掩码回显，回传掩码即"保留已存值" |
-| **用量与计费可见（新）** | 每次成功计费写入一条 `usage_logs` 记录（purpose = `ppt`），供管理后台「用量与计费」列表与汇总统计读取；以 PPT id 为幂等键，SDK 重试 / 刷新重报 / 重开 attempt **都不会重复计账**；若首次写入失败，后续重放会**自动补写**而不会让该 PPT 永久消失 |
-| **五语言文案（新）** | 新增 `ppt` namespace，中/繁/英/日/法齐全；管理端用量页新增 `ppt` 用途标签与筛选项 |
-
-### 4.2 使用方式
-
-管理端「积分设置」→ 配置 Docmee API Key 与每份扣费 → 打开启用开关 → 侧边栏进入 **AI PPT** → 在创作台里生成演示文稿，每生成一份按配置扣积分。
+模型生成的文件在对话消息中同时提供预览和下载操作。预览复用右侧 `ArtifactPanel`，支持 HTML、PDF、Office、文本和图片等文件。文件名没有可识别扩展名时，会结合 MIME 类型确定预览方式；无效 URL 不提供预览操作。
 
 ---
 
@@ -108,8 +93,7 @@
 
 | 范围 | 结果 |
 | --- | --- |
-| 前端全量 `vitest run --dir tests/frontend` | **136 文件 / 804 用例全通过** |
-| Go `internal/api`（Docmee 专项） | **10 个用例全过**（token 铸造与缓存、预扣/结算/归还语义、无额度失败关闭、积分关闭时免费、拒绝他人作业、配置门控、不泄露密钥、管理端往返与 URL 归一化） |
+| 前端全量 `vitest run --dir tests/frontend` | 历史测试结果见对应版本发布说明；当前版本以 CI 结果为准 |
 | Go `internal/store` | 通过（564s） |
 | Go `internal/tools` | 通过（142s） |
 | Go `internal/api` 全量 | 仅 2 项失败，均为 **Windows 平台固有**且发生在本次未修改的函数上：`os.Stat().Mode().Perm()` 在 Windows 恒为 `0666`；末尾检查 `/proc/self/environ` |
@@ -135,24 +119,12 @@
 | 符号链接 | 按文件返回，指向的目标被当普通文件上传 | 无安全影响，可能重复上传同一内容 |
 | 沙箱不可用时不能执行 | 需在部署侧配置沙箱服务 | 代码路径已按"有则用、无则降级"实现 |
 | 目录上传是逐文件请求 | 300 个文件 = 300 次请求 | 受控并发压到 3，弱网下仍慢；将来可考虑批量端点 |
-| 管理端用量表格不显示「积分」列 | `AdminUsageRecord` 未取 `usage_logs.credits` | 列表看得到用途/模型/成本，但逐行积分需看计费汇总或用户积分明细；补列是纯展示工作 |
 
 ---
 
-## 七、已修复的真实缺陷（交付后反馈）
-
-| 缺陷 | 根因 | 修法 |
-| --- | --- | --- |
-| **AI PPT 生成后没有扣费记录，用量与计费里不显示** | 结算积分预扣只写 `credit_ledger`，而管理端「用量与计费」**只读 `usage_logs`**（汇总读 `usage_stats`，由数据库触发器从 `usage_logs` 镜像）。Docmee 从不写这两张表，所以积分确实扣了、账本有记录，用量报表却一行都没有 | 每次成功计费写一条 `usage_logs`（purpose = `ppt`，credits = 实际结算额）；以 PPT id 作幂等键，重放/刷新/重开 attempt 不重复计账；首次写入失败时后续重放自动补写；管理端新增 `ppt` 用途文案与筛选项 |
-
-> 该缺陷的回归测试见 `server/internal/api/docmee_usage_test.go`（5 个用例：行写入与汇总口径、重放不重复、重开 attempt 不重复、两份额度两条记录、丢失写入可补写、未计费不产生记录）。
-
----
-
-## 八、相关设计文档
+## 七、相关设计文档
 
 | 文档 | 内容 |
 | --- | --- |
 | `docs/folder-upload.zh-CN.md` | 目录上传的决策、改动位置、边界与取舍、验证记录 |
 | `docs/document-preview-and-edit.zh-CN.md` | 文档预览与编辑的技术选型、分阶段实现、真实缺陷排查记录 |
-| `docs/ai-ppt-docmee.md` | AI PPT / Docmee 集成方案 |
